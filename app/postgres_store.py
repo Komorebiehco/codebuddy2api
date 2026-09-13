@@ -8,14 +8,12 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import threading
 import time
 import uuid
-from typing import Any
 
 from .audit_store import METRICS, _CLEANUP_BATCH, _CLEANUP_SECONDS, number, safe_attempt, safe_label
-from .control_store import ConflictError, validate_model
+from .control_store import ConflictError, _identifier, validate_model
 from .settings import validate_settings
 
 
@@ -66,13 +64,8 @@ class PostgresControlStore:
             self._db.close()
             raise
 
-    def _load(self):
-        row = self._db.execute(
-            "SELECT revision, payload FROM codebuddy_control WHERE id=1"
-        ).fetchone()
-        if row is None:
-            raise ValueError("管理数据库状态缺失")
-        data = _json(row["payload"])
+    @staticmethod
+    def _load_data(revision, data):
         if not isinstance(data, dict) or set(data) != {"settings", "models", "credentials"}:
             raise ValueError("管理数据库状态无效")
         validate_settings(data["settings"])
@@ -81,11 +74,23 @@ class PostgresControlStore:
         for source, rule in data["models"].items():
             validate_model(source, rule, data["models"])
         for identity, metadata in data["credentials"].items():
-            if not isinstance(identity, str) or not isinstance(metadata, dict):
+            try:
+                _identifier(identity, "账号指纹")
+            except ValueError:
+                raise ValueError("管理数据库凭证元数据无效") from None
+            if not isinstance(metadata, dict):
                 raise ValueError("管理数据库凭证元数据无效")
             if set(metadata) - {"enabled", "label"} or type(metadata.get("enabled")) is not bool:
                 raise ValueError("管理数据库凭证元数据无效")
-        return {"revision": int(row["revision"]), **data}
+        return {"revision": int(revision), **data}
+
+    def _load(self):
+        row = self._db.execute(
+            "SELECT revision, payload FROM codebuddy_control WHERE id=1"
+        ).fetchone()
+        if row is None:
+            raise ValueError("管理数据库状态缺失")
+        return self._load_data(row["revision"], _json(row["payload"]))
 
     def snapshot(self):
         with self._lock:
@@ -94,7 +99,12 @@ class PostgresControlStore:
     def _update(self, revision, change):
         with self._lock:
             with self._db.transaction():
-                state = self._load()
+                row = self._db.execute(
+                    "SELECT revision, payload FROM codebuddy_control WHERE id=1 FOR UPDATE"
+                ).fetchone()
+                if row is None:
+                    raise ValueError("管理数据库状态缺失")
+                state = self._load_data(row["revision"], _json(row["payload"]))
                 if revision is not None and (type(revision) is not int or revision != state["revision"]):
                     raise ConflictError("配置已更新，请刷新后重试")
                 change(state)
@@ -104,8 +114,9 @@ class PostgresControlStore:
                     "UPDATE codebuddy_control SET revision=%s, payload=CAST(%s AS jsonb) WHERE id=1",
                     (state["revision"], _json_text(payload)),
                 )
-                self._snapshot = copy.deepcopy(state)
-                return copy.deepcopy(state)
+                published = copy.deepcopy(state)
+            self._snapshot = published
+            return copy.deepcopy(published)
 
     def update_settings(self, values, revision):
         if type(revision) is not int:
@@ -123,8 +134,7 @@ class PostgresControlStore:
         return self._update(revision, change)
 
     def set_credential(self, account_key, enabled):
-        if not isinstance(account_key, str) or not account_key:
-            raise ValueError("账号指纹无效")
+        _identifier(account_key, "账号指纹")
         if type(enabled) is not bool:
             raise ValueError("enabled 必须为布尔值")
         return self._update(
@@ -349,7 +359,9 @@ class PostgresAuditStore:
         result["id"] = safe_label(source.get("id", source.get("event_id"))) or uuid.uuid4().hex
         result["event_id"] = result["id"]
         result["epoch"] = source.get("epoch", self._epoch)
-        result["started_at"] = number(source.get("started_at")) or time.time()
+        result["started_at"] = number(source.get("started_at"))
+        if result["started_at"] is None:
+            result["started_at"] = time.time()
         result["outcome"] = source.get("outcome") if source.get("outcome") in ("success", "error", "cancelled") else "error"
         result["streaming"] = source.get("streaming") is True
         for key in (*METRICS, "duration_ms", "first_token_ms", "status_code"):
@@ -513,7 +525,10 @@ class PostgresAuditStore:
                     """, (logical_bytes,)
                 )
             self._prune()
-            return {"ok": True, "recorded": True, "details": bool(keep)}
+            details = bool(self._db.execute(
+                "SELECT 1 FROM codebuddy_audit_requests WHERE id=%s", (data["id"],)
+            ).fetchone())
+            return {"ok": True, "recorded": True, "details": details}
 
         return self._run(commit, {"ok": False, "recorded": False, "reason": "storage_failure"},
                          write=True, dropped=True)
@@ -600,10 +615,11 @@ class PostgresAuditStore:
                 clauses.append(f"started_at {op} %s")
                 params.append(float(filters[key]))
         if filters.get("search"):
-            term = str(filters["search"])[:160]
+            term = str(filters["search"])[:160].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             columns = ("id", "model", "profile", "credential") if kind == "request" else ("id", "action")
-            clauses.append("(" + " OR ".join(f"{col} LIKE %s" for col in columns) + ")")
-            params.extend(["%" + term + "%"] * len(columns))
+            clauses.append("(" + " OR ".join(f"{col} LIKE %s ESCAPE %s" for col in columns) + ")")
+            for _ in columns:
+                params.extend(["%" + term + "%", "\\"])
         where = " WHERE " + " AND ".join(clauses)
 
         def fetch():
@@ -692,10 +708,16 @@ class PostgresAuditStore:
                 FROM codebuddy_audit_accounting WHERE id=1
                 """
             ).fetchone()
-            return {**row, "pending_cleanup": self._cleanup_pending()}
+            size = self._db.execute(
+                "SELECT pg_database_size(current_database()) AS size"
+            ).fetchone()["size"]
+            return {**row, "pending_cleanup": self._cleanup_pending(),
+                    "db_bytes": int(size), "wal_bytes": 0, "shm_bytes": 0}
 
         result = self._run(fetch, {"logical_bytes": None, "pending_cleanup": None}, write=True)
-        return {**result, "db_bytes": None, "wal_bytes": None, "shm_bytes": None,
+        return {"db_bytes": result.pop("db_bytes", None),
+                "wal_bytes": result.pop("wal_bytes", 0),
+                "shm_bytes": result.pop("shm_bytes", 0), **result,
                 "max_bytes": self.max_bytes, "retention_days": self.retention_days,
                 "preview_limit": self.preview_limit, "schema_version": self.SCHEMA_VERSION,
                 "epoch": self._epoch, "degraded": bool(self.failure_count),
