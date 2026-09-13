@@ -285,8 +285,12 @@ class CredentialManager:
         if not new_auth.get("refreshExpiresAt") and new_auth.get("refreshExpiresIn"):
             new_auth["refreshExpiresAt"] = int(time.time() * 1000) + new_auth["refreshExpiresIn"] * 1000
         updated = dict(s, auth=new_auth)
+        encoded = json.dumps(updated, ensure_ascii=False, indent=2).encode("utf-8")
+        credential_store = CONFIG.get("credential_store")
+        if credential_store is not None:
+            credential_store.put(self.path.name, _credential_identity(updated), encoded)
         atomic_write_credential(self.path.parent, self.path.name,
-                                json.dumps(updated, ensure_ascii=False, indent=2).encode("utf-8"))
+                                encoded)
         self._cached = updated
         self._mtime = self._file_version()
         self._generation += 1
@@ -901,6 +905,9 @@ class CredentialPool:
             cm = entry["cm"]
             try:
                 with cm._lock, credential_file_lock(cm.path.parent, cm.path.name):
+                    credential_store = CONFIG.get("credential_store")
+                    if credential_store is not None:
+                        credential_store.delete(cm.path.name, entry.get("account_key"))
                     os.unlink(entry["id"])
                     cm.invalidate()
             except FileNotFoundError:
@@ -1390,6 +1397,9 @@ def _store_credential(directory: Path, name: str, content: bytes, uid: str, *, r
                     raise CredentialConflictError("文件已存在，需明确允许替换")
                 if not replace_identity and target.exists() and _cred_identity(target) != identity:
                     raise CredentialConflictError("OAuth 不可覆盖其他产品或账号的凭据")
+                credential_store = CONFIG.get("credential_store")
+                if credential_store is not None:
+                    credential_store.put(name, identity, content)
                 target = atomic_write_credential(directory, name, content)
                 if pool is not None:
                     pool.reload([target])
@@ -2728,6 +2738,22 @@ def main():
     files = [Path(p) for p in args.auth_file]
     if not files:
         seed_credentials()  # 自管模式：启动时把桌面端缺失凭据复制进 auth/
+    credential_store = CONFIG.get("credential_store")
+    if credential_store is not None:
+        def _validate_for_store(content):
+            data = json.loads(content.decode("utf-8"))
+            uid, error = auth_oauth.validate_cred_data(data)
+            if error or not uid:
+                raise ValueError("invalid credential")
+            return data
+
+        result = credential_store.sync_directory(
+            managed_auth_dir(),
+            _validate_for_store,
+            _credential_identity,
+        )
+        _log("[cred] Supabase 凭证同步完成: "
+             f"恢复 {result['restored']}，接管 {result['adopted']}，移除 {result['removed']}")
     CONFIG["cred_pool"] = CredentialPool(files, scan=not files)
     CONFIG["cred"] = CONFIG["cred_pool"].first()
     CONFIG["account_catalogs"] = {}  # 在任何维护线程/预检启动前关闭静态兜底。

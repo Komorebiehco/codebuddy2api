@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 httpx
 psycopg[binary]>=3.2,<4
+cryptography>=42,<47

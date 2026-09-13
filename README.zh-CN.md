@@ -181,7 +181,12 @@ Cherry Studio / ZCode / LobeChat / NextChat / Open WebUI 或自写 SDK 客户端
 
 指定函数的 `tool_choice` 会转换为仅提供该函数并设为 `required`，无效名称在本地拒绝。需要 JSON 响应时显式设置 `stream: false`，SSE 则设置 `stream: true`。
 
-环境变量：`CODEBUDDY_AUTH_DIR`（凭据目录）、`CODEBUDDY_IMPORT_DIR`（API 允许导入目录）、`CODEBUDDY2API_KEY`、`CODEBUDDY2API_LOG`。
+环境变量：`CODEBUDDY_AUTH_DIR`（本地缓存目录）、`CODEBUDDY_IMPORT_DIR`（API 允许导入目录）、`CODEBUDDY2API_KEY`、`CODEBUDDY2API_LOG`。
+
+部署到 Render 时，可设置 `CODEBUDDY_CREDENTIALS_DATABASE_URL` 与
+`CODEBUDDY_CREDENTIALS_ENCRYPTION_KEY`，把完整 `.info` 凭据加密保存到独立
+Supabase PostgreSQL。应用启动时会先恢复数据库凭据到本地缓存；上传、OAuth
+保存、token 刷新和删除也会同步更新远端。缺少加密 key 时服务不会启动。
 
 限额也可通过 `CODEBUDDY2API_MAX_IMAGES`、`CODEBUDDY2API_IMAGE_POLICY`、`CODEBUDDY2API_MAX_REQUEST_BYTES`、`CODEBUDDY2API_LOG_BODY_LIMIT` 配置；命令行参数优先，修改后重启生效。
 

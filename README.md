@@ -181,7 +181,13 @@ Send `POST /admin/credentials` with `{"path":"account.info"}` or the file's abso
 
 Named function choices are sent upstream as `required` with only that function available; invalid names are rejected locally. Set `stream: false` explicitly for JSON responses and `stream: true` for SSE.
 
-Environment variables: `CODEBUDDY_AUTH_DIR` (credential dir), `CODEBUDDY_IMPORT_DIR` (allowed API import dir), `CODEBUDDY2API_KEY`, `CODEBUDDY2API_LOG`.
+Environment variables: `CODEBUDDY_AUTH_DIR` (local cache dir), `CODEBUDDY_IMPORT_DIR` (allowed API import dir), `CODEBUDDY2API_KEY`, `CODEBUDDY2API_LOG`.
+
+For Render, set `CODEBUDDY_CREDENTIALS_DATABASE_URL` and
+`CODEBUDDY_CREDENTIALS_ENCRYPTION_KEY` to keep complete `.info` credentials
+encrypted in a separate Supabase PostgreSQL project. Startup restores the
+database into the local cache, and uploads, OAuth saves, token refreshes, and
+deletes update the remote store. The service refuses to start without the key.
 
 Limits also accept `CODEBUDDY2API_MAX_IMAGES`, `CODEBUDDY2API_IMAGE_POLICY`, `CODEBUDDY2API_MAX_REQUEST_BYTES`, and `CODEBUDDY2API_LOG_BODY_LIMIT`. CLI flags take precedence; restart after changing configuration.
 

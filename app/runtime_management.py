@@ -8,6 +8,7 @@ from pathlib import Path
 from .admin_api import install_admin
 from .audit_store import AuditStore
 from .control_store import ControlStore
+from .credential_store import CredentialStore
 from .postgres_store import PostgresAuditStore, PostgresControlStore
 from .gateway_management import Management, install_pages
 from .model_policy import PolicyScopeMiddleware
@@ -61,6 +62,14 @@ class UnavailableAudit:
 def initialize(gateway, args, argv=None):
     config = gateway.CONFIG
     root = gateway.managed_auth_dir()
+    credential_database_url = os.environ.get("CODEBUDDY_CREDENTIALS_DATABASE_URL")
+    if credential_database_url:
+        config["credential_store"] = CredentialStore(
+            credential_database_url,
+            os.environ.get("CODEBUDDY_CREDENTIALS_ENCRYPTION_KEY"),
+        )
+    else:
+        config["credential_store"] = None
     database_url = (os.environ.get("CODEBUDDY_DATABASE_URL")
                     or os.environ.get("SUPABASE_DB_URL")
                     or os.environ.get("DATABASE_URL"))
@@ -112,7 +121,7 @@ def install(gateway):
 
 
 def close(config):
-    for key in ("audit_store", "control_store"):
+    for key in ("audit_store", "control_store", "credential_store"):
         store = config.get(key)
         if store is not None:
             store.close()
