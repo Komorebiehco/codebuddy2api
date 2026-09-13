@@ -2776,7 +2776,11 @@ def main():
 
     sys.stderr.write(f"\n✅ 监听 http://{args.host}:{args.port}（直连后端，原生 function calling）\n")
     sys.stderr.write(f"   WebUI     : http://{args.host}:{args.port}/dashboard\n")
-    sys.stderr.write("   SQLite 审计默认开启，凭证仍以 .info 文件保存\n")
+    audit_backend = "PostgreSQL" if CONFIG.get("database_backend") == "postgresql" else "SQLite"
+    credential_backend = ("加密 Supabase 凭证存储 + 本地缓存"
+                          if CONFIG.get("credential_store") is not None
+                          else ".info 文件")
+    sys.stderr.write(f"   审计存储  : {audit_backend}；凭证存储：{credential_backend}\n")
     sys.stderr.write("   GET  /v1/models\n")
     sys.stderr.write("   POST /v1/chat/completions   (原生 tools/tool_calls，支持流式)\n")
     sys.stderr.write("   POST /v1/responses          (Responses API，Codex CLI 兼容)\n")
