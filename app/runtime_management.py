@@ -2,11 +2,13 @@
 
 import sqlite3
 import sys
+import os
 from pathlib import Path
 
 from .admin_api import install_admin
 from .audit_store import AuditStore
 from .control_store import ControlStore
+from .postgres_store import PostgresAuditStore, PostgresControlStore
 from .gateway_management import Management, install_pages
 from .model_policy import PolicyScopeMiddleware
 from .observability import AuditMiddleware
@@ -59,7 +61,15 @@ class UnavailableAudit:
 def initialize(gateway, args, argv=None):
     config = gateway.CONFIG
     root = gateway.managed_auth_dir()
-    control = ControlStore(root / "control.sqlite3")
+    database_url = (os.environ.get("CODEBUDDY_DATABASE_URL")
+                    or os.environ.get("SUPABASE_DB_URL")
+                    or os.environ.get("DATABASE_URL"))
+    if database_url:
+        control = PostgresControlStore(database_url)
+        config["database_backend"] = "postgresql"
+    else:
+        control = ControlStore(root / "control.sqlite3")
+        config["database_backend"] = "sqlite"
     config["control_store"] = control
     config.update(vars(args))
     config["model_guard"] = not args.no_model_guard
@@ -76,12 +86,19 @@ def initialize(gateway, args, argv=None):
     config["trial_ledger"] = (gateway.trial_rewards.TrialLedger(root / "trial-ledger.json")
                               if config["auto_trial"] else None)
     try:
-        config["audit_store"] = AuditStore(root / "logs.sqlite3", max_bytes=config["audit_max_bytes"],
-                                            retention_days=config["audit_retention_days"],
-                                            preview_limit=config["audit_diagnostic_bytes"])
-    except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+        if database_url:
+            config["audit_store"] = PostgresAuditStore(
+                database_url, max_bytes=config["audit_max_bytes"],
+                retention_days=config["audit_retention_days"],
+                preview_limit=config["audit_diagnostic_bytes"])
+        else:
+            config["audit_store"] = AuditStore(
+                root / "logs.sqlite3", max_bytes=config["audit_max_bytes"],
+                retention_days=config["audit_retention_days"],
+                preview_limit=config["audit_diagnostic_bytes"])
+    except Exception as error:
         config["audit_store"] = UnavailableAudit(type(error).__name__)
-        print("[audit] 日志库不可用，推理服务继续；请检查目录权限或使用备份恢复日志库。", file=sys.stderr)
+        print("[audit] 日志库不可用，推理服务继续；请检查数据库连接或存储状态。", file=sys.stderr)
     config["management"] = Management(gateway)
     return config["management"]
 

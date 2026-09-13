@@ -22,6 +22,7 @@ services:
       CODEBUDDY2API_LOG: ${CODEBUDDY2API_LOG:-}
       CODEBUDDY2API_AUTO_TRIAL: ${CODEBUDDY2API_AUTO_TRIAL:-false}
       CODEBUDDY_AUTH_DIR: /data/auth
+      CODEBUDDY_DATABASE_URL: ${CODEBUDDY_DATABASE_URL:-}
     command: >
       python3 converter.py
       --host 0.0.0.0
